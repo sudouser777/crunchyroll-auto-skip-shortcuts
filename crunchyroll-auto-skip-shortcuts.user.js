@@ -1,11 +1,19 @@
 // ==UserScript==
 // @name         Crunchyroll Auto Skip & Enhanced Shortcuts
-// @namespace    https://violentmonkey.github.io/
+// @namespace    https://github.com/sudouser777
 // @version      1.0
 // @description  Auto-clicks "Skip Intro"/"Recap"/"Credits" and adds reliable keyboard shortcuts. Fully hardened against React desync and native event hijacking.
+// @author       sudouser777
+// @license      MIT
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=crunchyroll.com
 // @match        https://www.crunchyroll.com/*
+// @match        https://static.crunchyroll.com/vilos-v2/web/vilos/*
 // @run-at       document-start
 // @grant        none
+// @homepageURL  https://github.com/sudouser777/crunchyroll-auto-skip-shortcuts
+// @supportURL   https://github.com/sudouser777/crunchyroll-auto-skip-shortcuts/issues
+// @downloadURL  https://raw.githubusercontent.com/sudouser777/crunchyroll-auto-skip-shortcuts/main/crunchyroll-auto-skip-shortcuts.user.js
+// @updateURL    https://raw.githubusercontent.com/sudouser777/crunchyroll-auto-skip-shortcuts/main/crunchyroll-auto-skip-shortcuts.user.js
 // ==/UserScript==
 
 (function () {
@@ -13,11 +21,20 @@
 
     const DEBUG = false;
 
+    // Covers both the aria-labelled buttons and the current Vilos player UI
+    // (data-testid is language-independent, so localized skip buttons work too).
     const SKIP_SELECTORS = [
         'button[aria-label="Skip Intro"]',
         'button[aria-label="Skip Recap"]',
-        'button[aria-label="Skip Credits"]'
+        'button[aria-label="Skip Credits"]',
+        '[data-testid="skipIntroText"]',
+        '[data-testid="skip-intro-icon"]'
     ];
+
+    // Prevents double-firing (e.g. skipping two segments in a row) while React
+    // tears the clicked button down.
+    const SKIP_COOLDOWN_MS = 1000;
+    let lastSkipClickAt = 0;
 
     function isClickable(el) {
         if (!el || el.disabled) return false;
@@ -26,11 +43,16 @@
     }
 
     function tryClick() {
+        if (performance.now() - lastSkipClickAt < SKIP_COOLDOWN_MS) return;
         for (const sel of SKIP_SELECTORS) {
-            const btn = document.querySelector(sel);
-            if (isClickable(btn)) {
-                btn.click();
-                if (DEBUG) console.log('[CR Auto Skip] Clicked:', btn.getAttribute('aria-label'));
+            const el = document.querySelector(sel);
+            if (!el) continue;
+            const target = el.closest('button') || el;
+            if (isClickable(target)) {
+                target.click();
+                lastSkipClickAt = performance.now();
+                if (DEBUG) console.log('[CR Auto Skip] Clicked:', target.getAttribute('aria-label') || target.getAttribute('data-testid') || sel);
+                return; // one skip per tick
             }
         }
     }
@@ -100,12 +122,24 @@
         'j', 'k', 'l', ' ', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'
     ]);
 
-    function onKeyDown(e) {
+    // Returns true for browser/system combos we must never hijack
+    // (Alt+Left / Cmd+Left = Back, Cmd+Right = Forward, Ctrl+L, Ctrl+F, ...).
+    function isReservedCombo(e, key) {
+        if (e.altKey || e.metaKey) return true;
+        if (e.ctrlKey && !['arrowleft', 'arrowright'].includes(key)) return true;
+        return false;
+    }
+
+    function isTypingTarget(e) {
         const tag = e.target?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target?.isContentEditable) return;
+        return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target?.isContentEditable;
+    }
+
+    function onKeyDown(e) {
+        if (isTypingTarget(e)) return;
 
         const key = e.key.toLowerCase();
-        if ((e.ctrlKey || e.metaKey) && !['arrowleft', 'arrowright'].includes(key)) return;
+        if (isReservedCombo(e, key)) return;
         if (!OWNED_KEYS.has(key)) return;
 
         const video = getVideo();
@@ -151,8 +185,8 @@
                 video.muted = !video.muted;
                 break;
             case 'p': {
-                if (document.pictureInPictureElement) document.exitPictureInPicture();
-                else video.requestPictureInPicture().catch(() => {});
+                if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+                else if (document.pictureInPictureEnabled) video.requestPictureInPicture().catch(() => {});
                 break;
             }
             case ' ':
@@ -181,38 +215,35 @@
             case 'arrowleft': {
                 let seekAmount = 10;
                 if (e.shiftKey) seekAmount = 30;
-                else if (e.ctrlKey || e.metaKey) seekAmount = 60;
+                else if (e.ctrlKey) seekAmount = 60;
                 seekBy(-seekAmount);
                 break;
             }
             case 'arrowright': {
                 let seekAmount = 10;
                 if (e.shiftKey) seekAmount = 30;
-                else if (e.ctrlKey || e.metaKey) seekAmount = 60;
+                else if (e.ctrlKey) seekAmount = 60;
                 seekBy(seekAmount);
                 break;
             }
             case 'arrowup': {
-                const newVol = Math.min(1, video.volume + 0.05);
+                const newVol = Math.min(1, Math.round((video.volume + 0.05) * 100) / 100);
                 video.volume = newVol;
                 if (newVol > 0) video.muted = false;
                 break;
             }
             case 'arrowdown': {
-                const newVol = Math.max(0, video.volume - 0.05);
-                video.volume = newVol;
-                if (newVol > 0) video.muted = false;
+                video.volume = Math.max(0, Math.round((video.volume - 0.05) * 100) / 100);
                 break;
             }
         }
     }
 
     function onKeyUp(e) {
-        const tag = e.target?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target?.isContentEditable) return;
+        if (isTypingTarget(e)) return;
 
         const key = e.key.toLowerCase();
-        if ((e.ctrlKey || e.metaKey) && !['arrowleft', 'arrowright'].includes(key)) return;
+        if (isReservedCombo(e, key)) return;
         if (!OWNED_KEYS.has(key)) return;
         if (!getVideo()) return;
 
