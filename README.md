@@ -9,6 +9,15 @@ A lightweight userscript for [Crunchyroll](https://www.crunchyroll.com) that **a
 
 No configuration needed. Install it and it just works.
 
+## 📜 The Scripts
+
+| Script | What it does |
+| --- | --- |
+| [`crunchyroll-auto-skip-shortcuts.user.js`](https://raw.githubusercontent.com/sudouser777/crunchyroll-auto-skip-shortcuts/main/crunchyroll-auto-skip-shortcuts.user.js) | Clicks Crunchyroll's own skip buttons and adds the enhanced keyboard shortcuts. |
+| [`crunchyroll-auto-skip-recap.user.js`](https://raw.githubusercontent.com/sudouser777/crunchyroll-auto-skip-shortcuts/main/crunchyroll-auto-skip-recap.user.js) | Skips recaps that have **no** skip button by matching the episode title in the captions, falls back to Crunchyroll skip data / AniSkip, and auto-plays the next episode once the credits start. |
+
+The two scripts are independent — install either one, or both.
+
 ## ✨ Features
 
 - **Auto-skip** — clicks *Skip Intro*, *Skip Recap*, and *Skip Credits* the moment they appear (works with the current Vilos player UI and in every interface language).
@@ -24,7 +33,9 @@ No configuration needed. Install it and it just works.
    - [Tampermonkey](https://www.tampermonkey.net/) (Chrome, Edge, Firefox, Safari, Opera)
    - [Violentmonkey](https://violentmonkey.github.io/) (Chrome, Edge, Firefox)
    - [Greasemonkey](https://addons.mozilla.org/firefox/addon/greasemonkey/) (Firefox)
-2. **[Click here to install the script](https://raw.githubusercontent.com/sudouser777/crunchyroll-auto-skip-shortcuts/main/crunchyroll-auto-skip-shortcuts.user.js)** — your userscript manager will open an install prompt.
+2. Install the script(s) you want — your userscript manager will open an install prompt:
+   - **[Crunchyroll Auto Skip & Enhanced Shortcuts](https://raw.githubusercontent.com/sudouser777/crunchyroll-auto-skip-shortcuts/main/crunchyroll-auto-skip-shortcuts.user.js)** — skip buttons + keyboard shortcuts.
+   - **[Crunchyroll Auto Skip Recap](https://raw.githubusercontent.com/sudouser777/crunchyroll-auto-skip-shortcuts/main/crunchyroll-auto-skip-recap.user.js)** — skips unskippable recaps and auto-advances to the next episode.
 3. Confirm the installation, then open (or reload) any Crunchyroll watch page.
 
 > **Chrome / Edge note:** recent Chrome versions require Developer Mode for userscripts. Go to `chrome://extensions` → enable **Developer mode** (top-right toggle), or in Tampermonkey's settings follow the "enable user scripts" prompt. Without this, Tampermonkey cannot inject any script.
@@ -58,6 +69,13 @@ Shortcuts are active on watch pages whenever you're not typing in a text field. 
 | `C` | Toggle subtitles (falls back to opening the track menu) |
 | `,` / `.` | Playback speed −0.25× / +0.25× (0.25× – 4×) |
 
+### Recap Script Only
+
+| Key | Action |
+| --- | --- |
+| `S` | Mark the current position as the content start for this episode |
+| `U` | Undo the last automatic skip |
+
 Browser and system combinations (`Alt`/`Cmd` + arrows, `Ctrl+F`, `Ctrl+L`, …) are always passed through untouched.
 
 ## ⏭️ How Auto-Skip Works
@@ -70,6 +88,25 @@ Every 500 ms the script looks for a visible, enabled skip button and clicks it o
 A 1-second cooldown prevents double-firing while the player re-renders, so you never skip two segments by accident.
 
 **Note:** Crunchyroll only shows skip buttons on supported series and for Premium accounts (it's a Crunchyroll feature, not something the script can add). Wherever the button appears, the script clicks it.
+
+## 🎬 Auto Skip Recap (recaps with no skip button)
+
+Some recaps — most notably older and long-running series like *One Piece* — are burnt into the episode and never show a *Skip Recap* button. `crunchyroll-auto-skip-recap.user.js` handles that case by using the episode's own captions as the signal.
+
+### How it works
+
+1. **Captures the player's own traffic.** At `document-start` the script wraps `fetch`/`XHR` to keep the signed `.mpd` manifest and WebVTT caption bodies the player already downloaded (re-fetching those URLs later returns HTTP 401, so the captured bodies are reused).
+2. **Looks for the title in the captions.** The episode title is read from the page header and matched against caption cues in the first 8 minutes, with normalization (diacritics, punctuation, apostrophes), a stop-word-aware word-overlap score, and cue chaining for titles split across two cues. If nothing matches, the script leaves the timeline alone.
+3. **Seeks to the title.** The jump goes through the player's own Bitmovin API rather than `video.currentTime`, which makes it instant and avoids a stall or a snap-back. If the API can't be reached, it falls back to `currentTime`.
+4. **Fallbacks for other series.** When the title can't be matched, it uses Crunchyroll's own skip-event JSON for the episode, then community [AniSkip](https://aniskip.com) data (resolved through AniList).
+5. **Credits → next episode.** The player's *Skip Credits* control is clicked as soon as it appears, then the next-episode button is clicked once, with a cooldown so it can't fire twice.
+
+### Notes
+
+- A saved mark (`S`) always takes priority over title matching, which is handy when an episode's captions don't contain the title.
+- AniSkip matches by MyAnimeList ID. A seasonal show that maps to the wrong MAL entry can be pinned per series with `localStorage['crskip-mal-override:<series name, lowercase>'] = '<malId>'`, or AniSkip can be disabled entirely via `ENABLE_ANISKIP = false`.
+- `DEBUG` and `TRACE_SEEK` near the top of the script turn on verbose logging and a seek timeline table in the console.
+- This script runs on `www.crunchyroll.com` only (it needs the watch page, not the player iframe).
 
 ## 🔧 How the Shortcuts Stay Reliable
 
@@ -95,11 +132,14 @@ The script runs on both `www.crunchyroll.com` and the embedded player at `static
 - **Shortcuts don't respond** — click anywhere on the video first so the player iframe has keyboard focus.
 - **Auto-skip doesn't trigger** — the episode must actually show a skip button (Premium + supported series). If Crunchyroll shows the button but it isn't clicked, please [open an issue](https://github.com/sudouser777/crunchyroll-auto-skip-shortcuts/issues) with the episode URL.
 - **Picture-in-picture unavailable** — some browsers/platforms disable PiP; the key is safely ignored there.
-- **Debug logging** — set `const DEBUG = false;` to `true` near the top of the script to see skip/load logs in the console.
+- **Debug logging** — set `const DEBUG = false;` to `true` near the top of the script to see skip/load logs in the console. In the recap script, `TRACE_SEEK = true` additionally prints a seek timeline.
+- **Recap didn't skip** — confirm the script is enabled and check the console for `no cue matched title`. If the captions simply don't contain the title, press `S` at the content start once; the mark is remembered for that episode. Also note that only the first 8 minutes are searched.
 
 ## 🔒 Privacy
 
-The script runs entirely locally in your browser. It makes **no network requests**, collects **no data**, and uses `@grant none` (no special userscript APIs). The only things it touches are the player's DOM and the `<video>` element.
+Both scripts run locally in your browser, collect **no data**, and use `@grant none` (no special userscript APIs). They only touch the player's DOM, the `<video>` element, and `localStorage` (marks and AniSkip caching).
+
+The shortcuts script makes **no network requests**. The recap script makes requests only for what it needs to find a skip point: the episode manifest and caption files (usually served from the player's own cached responses) and, when title matching fails, public [AniSkip](https://aniskip.com) / [AniList](https://anilist.co) endpoints.
 
 ## ⚠️ Disclaimer
 
