@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Crunchyroll Auto Skip Recap
 // @namespace    https://github.com/sudouser777
-// @version      1.0
+// @version      1.0.1
 // @description  Auto-skips recaps & openings on Crunchyroll. Title-matching tuned for One Piece, with Crunchyroll skip-data + AniSkip fallbacks for other series. Skips credits and auto-plays the next episode. Seeks via the player's own API for instant, stall-free jumps. Hotkeys: S = mark content start, U = undo.
 // @author       sudouser777
 // @license      MIT
@@ -36,6 +36,8 @@
     const FALLBACK_GRACE_MS = 8000;
     const NO_MATCH_TICKS_BEFORE_FALLBACK = 6;
     const MAX_MANIFEST_CACHE = 5;
+    const ADVANCE_LOCKOUT_MS = 15000;
+    const CREDITS_NEAR_END_S = 180;
 
     const CREDITS_SKIP_SELECTORS = [
         'button[aria-label="Skip Credits"]',
@@ -50,8 +52,6 @@
         '[data-testid="next-episode"] a',
         '[data-t="next-episode"] a'
     ];
-    const NEXT_EPISODE_WINDOW_MS = 60000;
-    const NEXT_EPISODE_COOLDOWN_MS = 5000;
 
     // ---------------------------------------------------------------------
     // URL helpers
@@ -230,6 +230,7 @@
 
         const priority = new Set(['current','ref','refs','player','_player','mediaEngine','_mediaEngine','_katamariPlayer','playerOrchestrator','playerActionsOrchestrator','memoizedProps','memoizedState','stateNode','child','return','next','value']);
         const skip = new Set(['alternate','_debugOwner','_debugInfo','_owner','ownerDocument','parentNode','parentElement','children','childNodes','window','document','location','src','currentSrc','manifest','manifest_','config','config_','configuration','networkingEngine_','drmEngine_','session','token','headers','request']);
+
         let head = 0, nodes = 0;
         const t0 = performance.now();
         while (head < queue.length && nodes < 6000 && performance.now() - t0 < 120) {
@@ -746,8 +747,10 @@
         } else if (e.code === 'KeyU') {
             if (lastUndo && lastUndo.episodeId === getEpisodeId()) {
                 state.seekOp = null; state.done = true;
-                try { video.currentTime = lastUndo.from; } catch (err) {}
-                if (lastUndo.wasPlaying) { const p = video.play(); if (p && p.catch) p.catch(() => {}); }
+                const p = findBitmovin(video, false);
+                if (p && typeof p.seek === 'function') { try { p.seek(lastUndo.from); } catch (err) {} }
+                else { try { video.currentTime = lastUndo.from; } catch (err) {} }
+                if (lastUndo.wasPlaying) { const pr = video.play(); if (pr && pr.catch) pr.catch(() => {}); }
                 traceEnd('undo'); showToast('Skip undone'); lastUndo = null;
             }
         }
@@ -770,27 +773,48 @@
         }
         return null;
     }
-    let creditsEpisodeId = null, creditsHandled = false, nextEpisodeClicked = false;
-    let nextEpisodeWindowUntil = 0, lastNextEpisodeClickAt = 0;
+
+    let creditsEpisodeId = null;
+    let creditsHandled = false;
+    let lastAdvanceAt = -Infinity;   // GLOBAL lockout — deliberately NOT reset on episode change
+
     function autoAdvanceTick() {
         if (!location.pathname.includes('/watch/')) return;
         const episodeId = getEpisodeId();
-        if (episodeId !== creditsEpisodeId) { creditsEpisodeId = episodeId; creditsHandled = false; nextEpisodeClicked = false; nextEpisodeWindowUntil = 0; lastNextEpisodeClickAt = 0; }
-        const now = performance.now();
-        if (!creditsHandled) {
-            const creditsButton = findClickable(CREDITS_SKIP_SELECTORS);
-            if (creditsButton) { creditsHandled = true; nextEpisodeWindowUntil = now + NEXT_EPISODE_WINDOW_MS; log('credits detected, skipping them'); creditsButton.click(); }
+        if (episodeId !== creditsEpisodeId) {
+            creditsEpisodeId = episodeId;
+            creditsHandled = false;
+            // Keep lastAdvanceAt: the lockout must survive the transition so stale
+            // end-card buttons / a stale `ended` flag can't cascade into more skips.
         }
-        if (nextEpisodeClicked) return;
-        if (now - lastNextEpisodeClickAt < NEXT_EPISODE_COOLDOWN_MS) return;
+        const now = performance.now();
+        if (now - lastAdvanceAt < ADVANCE_LOCKOUT_MS) return;
+
         const video = getVideo();
-        const ended = !!video && video.ended;
-        if (!creditsHandled && !ended) return;
-        if (creditsHandled && now > nextEpisodeWindowUntil) return;
+        if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return;
+
+        // Only touch "Skip Credits" when genuinely near the end of THIS episode.
+        if (!creditsHandled && video.currentTime >= video.duration - CREDITS_NEAR_END_S) {
+            const creditsButton = findClickable(CREDITS_SKIP_SELECTORS);
+            if (creditsButton) {
+                creditsHandled = true;
+                log('credits detected, skipping them');
+                creditsButton.click();
+            }
+        }
+
+        // Advance only when this episode is truly finished. The currentTime check
+        // rejects a stale `ended` left on the reused <video> during a transition.
+        const reallyEnded = video.ended && video.currentTime >= video.duration - 5;
+        if (!creditsHandled && !reallyEnded) return;
+
         const nextButton = findClickable(NEXT_EPISODE_SELECTORS);
         if (!nextButton) return;
-        nextEpisodeClicked = true; lastNextEpisodeClickAt = now;
-        log('advancing to the next episode'); nextButton.click();
+
+        lastAdvanceAt = now;
+        creditsHandled = false;
+        log('advancing to the next episode');
+        nextButton.click();
     }
 
     setInterval(autoAdvanceTick, 500);
@@ -802,5 +826,5 @@
     }
     setInterval(safeTick, 500);
 
-    console.info('[CR Skip Recap] v1.0 active');
+    console.info('[CR Skip Recap] v1.0.1 active');
 })();
